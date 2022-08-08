@@ -391,7 +391,13 @@ func checkOriginAccess(r *cloudflare.DNSRecord) (string, error) {
 		}
 	}
 
-	return err.Error(), nil
+	// Shows error with the last part after semi-colon
+	s := strings.Split(err.Error(), ":")
+	if len(s) == 0 {
+		return fmt.Sprintf("ERR: %s", err.Error()), nil
+	} else {
+		return fmt.Sprintf("ERR:%s", s[len(s)-1]), nil
+	}
 }
 
 type HttpResp struct {

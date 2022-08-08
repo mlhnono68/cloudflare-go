@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -368,6 +369,37 @@ func zoneStatsFromTo(zoneId string, dateFrom time.Time, dateTo time.Time, output
 	}
 }
 
+func checkOriginAccess(r *cloudflare.DNSRecord) (string, error) {
+	// Test calling the origin from this client to verify the status code
+	//	fmt.Println(r.Content)
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://%s", r.Content), nil)
+	req.Host = r.Name
+	resp, err := client.Do(req)
+	if err == nil {
+		return fmt.Sprintf("%d", resp.StatusCode), nil
+	} else {
+		req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s", r.Content), nil)
+		req.Host = r.Name
+		resp, err := client.Do(req)
+		if err == nil {
+			return fmt.Sprintf("%d", resp.StatusCode), nil
+		}
+	}
+
+	return err.Error(), nil
+}
+
+type HttpResp struct {
+	Id   int
+	Resp string
+	Err  error
+}
+
 func zoneRecords(c *cli.Context) error {
 	var zone string
 	if c.NArg() > 0 {
@@ -379,6 +411,7 @@ func zoneRecords(c *cli.Context) error {
 		return nil
 	}
 	nbDaysStats := c.Int("with-days-stats")
+	bOriginAccessCheck := c.Bool("origin-access-check")
 
 	zoneID, err := api.ZoneIDByName(zone)
 	if err != nil {
@@ -440,6 +473,38 @@ func zoneRecords(c *cli.Context) error {
 	if nbDaysStats != 0 {
 		zoneStats(nbDaysStats, zoneID, &output, 2, 1)
 		cols = append(cols, "Stats")
+	}
+	if bOriginAccessCheck {
+		ch := make(chan *HttpResp)
+		responses := []*HttpResp{}
+
+		cols = append(cols, "Origin access")
+		nbProxied := 0
+		for i, r := range records {
+			if *r.Proxied {
+				fmt.Println("Async launch ", i)
+				nbProxied = nbProxied + 1
+				go func(ii int, r cloudflare.DNSRecord) {
+					resp, err := checkOriginAccess(&r)
+					ch <- &HttpResp{ii, resp, err}
+				}(i, r)
+			}
+		}
+
+	loop:
+		for {
+			select {
+			case r := <-ch:
+				fmt.Fprintln(os.Stderr, r.Id)
+				output[r.Id] = append(output[r.Id], r.Resp)
+				responses = append(responses, r)
+				if len(responses) == nbProxied {
+					break loop
+				}
+			case <-time.After(50 * time.Millisecond):
+				fmt.Fprint(os.Stderr, ".")
+			}
+		}
 	}
 	writeTable(c, output, cols...)
 

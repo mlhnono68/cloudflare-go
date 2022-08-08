@@ -294,6 +294,10 @@ func main() {
 							Usage: "add a total count stats for the last specified number of days",
 							Value: 0,
 						},
+						&cli.BoolFlag{
+							Name:  "origin-access-check",
+							Usage: "checks that proxied origins cannot be publicly accessed",
+						},
 					},
 				},
 				{
